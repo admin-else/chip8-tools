@@ -3,6 +3,7 @@
 
 #include <assert.h>
 #include <endian.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -57,7 +58,10 @@ struct chip8state {
   uint8_t display[CHIP8_DISPLAY_COLUMNS * CHIP8_DISPLAY_ROWS];
   uint16_t keyboard;
   int8_t reg_awaing_key; // -1 means not awating
+  int err;
 };
+
+#define LOG_DEBUG(...) printf(__VA_ARGS__)
 
 void draw_display(uint8_t *display) {
   ClearBackground((Color){0, 0, 0, 255});
@@ -69,13 +73,6 @@ void draw_display(uint8_t *display) {
                       (Color){255, 255, 255, 255});
     }
   }
-}
-
-static uint16_t next_instruction(struct chip8state *state) {
-  assert(state->PC < ARRAY_SIZE(state->memory));
-  uint16_t inst = be16toh(*(uint16_t *)&state->memory[state->PC]);
-  state->PC += sizeof(inst);
-  return inst;
 }
 
 // helpers
@@ -90,57 +87,74 @@ uint8_t static inline nn(uint16_t inst) { return inst & 0x00FF >> 0 * 4; }
 uint8_t static inline n(uint16_t inst) { return inst & 0x000F >> 0 * 4; }
 
 void simulate_instruction(struct chip8state *state) {
-  uint16_t inst = next_instruction(state);
+  assert(state->PC < ARRAY_SIZE(state->memory));
+  uint16_t inst = be16toh(*(uint16_t *)&state->memory[state->PC]);
+  state->PC += sizeof(inst);
+  LOG_DEBUG("0x%04X: %04X ", state->PC, inst);
   switch (inst_type(inst)) {
   case 0:
     switch (nn(inst)) {
     case 0xE0: // 00E0
+      LOG_DEBUG("clear screen\n");
       memset(state->display, 0, sizeof(state->display));
       return;
     case 0xEE: // 00EE
       state->PC = state->stack[state->SP--];
+      LOG_DEBUG("return\n");
       return;
-    default:  // 0NNN
+    default: // 0NNN
+      LOG_DEBUG("unsuported %X\n", nnn(inst));
       return; // unsuported 0NNN treat as nop
     }
   case 1: // 1NNN
     state->PC = nnn(inst);
+    LOG_DEBUG("jump %X\n", state->PC);
     return;
   case 2: // 2NNN
     state->stack[state->SP++] = state->PC;
     state->PC = nnn(inst);
+    LOG_DEBUG("call %X\n", state->PC);
     return;
   case 3: // 3XNN
     if (state->V[x(inst)] == nn(inst))
-      state->PC++;
+      state->PC += sizeof(inst);
+    LOG_DEBUG("if V%X == %X\n", x(inst), nn(inst));
     return;
   case 4: // 4XNN
     if (state->V[x(inst)] != nn(inst))
-      state->PC++;
+      state->PC += sizeof(inst);
+    LOG_DEBUG("if V%X != %X\n", x(inst), nn(inst));
     return;
   case 5: // 5XY0
     if (state->V[x(inst)] != state->V[y(inst)])
-      state->PC++;
+      state->PC += sizeof(inst);
+    LOG_DEBUG("if V%X != V%X\n", x(inst), y(inst));
     return;
   case 6: // 6XNN
     state->V[x(inst)] = nn(inst);
+    LOG_DEBUG("V%X = 0x%X\n", x(inst), nn(inst));
     return;
   case 7: // 7XNN
     state->V[x(inst)] += nn(inst);
+    LOG_DEBUG("V%X += 0x%X\n", x(inst), nn(inst));
     return;
   case 8: // these are very easy
     switch (n(inst)) {
     case 0: // 8XY0
       state->V[x(inst)] = state->V[y(inst)];
+      LOG_DEBUG("V%X = V%X\n", x(inst), y(inst));
       return;
     case 1: // 8XY1
       state->V[x(inst)] |= state->V[y(inst)];
+      LOG_DEBUG("V%X |= V%X\n", x(inst), y(inst));
       return;
     case 2: // 8XY2
       state->V[x(inst)] &= state->V[y(inst)];
+      LOG_DEBUG("V%X &= V%X\n", x(inst), y(inst));
       return;
     case 3: // 8XY3
       state->V[x(inst)] ^= state->V[y(inst)];
+      LOG_DEBUG("V%X ^= V%X\n", x(inst), y(inst));
       return;
       // now the harder ones
       // btw the old value are for the case that the flag register gets used
@@ -149,6 +163,7 @@ void simulate_instruction(struct chip8state *state) {
       uint16_t res = state->V[x(inst)] + state->V[y(inst)];
       state->V[x(inst)] = res & 0xFF;
       state->V[0xF] = res > 0xFF;
+      LOG_DEBUG("V%X += V%X // with carry\n", x(inst), y(inst));
       return;
     }
     case 5: // 8XY5
@@ -156,6 +171,7 @@ void simulate_instruction(struct chip8state *state) {
       uint8_t oldx = state->V[x(inst)];
       state->V[x(inst)] -= state->V[y(inst)];
       state->V[0xF] = oldx < state->V[y(inst)];
+      LOG_DEBUG("V%X -= V%X // with carry\n", x(inst), y(inst));
       return;
     }
     case 6: // 8XY6
@@ -163,12 +179,14 @@ void simulate_instruction(struct chip8state *state) {
       uint8_t oldx = state->V[x(inst)];
       state->V[x(inst)] >>= state->V[y(inst)];
       state->V[0xF] = oldx & 1;
+      LOG_DEBUG("V%X >>= V%X // with carry\n", x(inst), y(inst));
       return;
     }
     case 7: // 8XY7
     {
       state->V[x(inst)] = state->V[y(inst)] - state->V[x(inst)];
       state->V[0xF] = state->V[x(inst)] < state->V[y(inst)];
+      LOG_DEBUG("V%X = V%X - V%X // with carry\n", x(inst), y(inst), x(inst));
       return;
     }
     case 0xE: // 8XYE
@@ -176,21 +194,26 @@ void simulate_instruction(struct chip8state *state) {
       uint8_t oldx = state->V[x(inst)];
       state->V[x(inst)] <<= 1;
       state->V[0xF] = (oldx >> 7) & 0x1;
+      LOG_DEBUG("V%X <<= V%X // with carry\n", x(inst), y(inst));
       return;
     }
     }
   case 9: // 9XY0
     if (state->V[x(inst)] != state->V[y(inst)])
-      state->PC++;
+      state->PC += sizeof(inst);
+    LOG_DEBUG("if V%X != V%X\n", x(inst), y(inst));
     return;
   case 0xA: // ANNN
     state->I = nnn(inst);
+    LOG_DEBUG("I = %X\n", nnn(inst));
     return;
   case 0xB: // BNNN
     state->PC = nnn(inst) + state->V[0];
+    LOG_DEBUG("I = %X\n + V0", nnn(inst));
     return;
   case 0xC: // CXNN
     state->V[x(inst)] = rand() & nn(inst);
+    LOG_DEBUG("V%X = %X & rand()\n", x(inst), nn(inst));
     return;
   case 0xD: { // DXYN
     uint8_t x_off = state->V[x(inst)], y_off = state->V[y(inst)], flag = false;
@@ -206,38 +229,47 @@ void simulate_instruction(struct chip8state *state) {
       }
     }
     state->V[0xF] = flag;
+    LOG_DEBUG("sprite(V%X, V%X, %X)\n", x(inst), y(inst), n(inst));
     return;
   }
   case 0xE: // IO instructions
     switch (nn(inst)) {
     case 0x9E: // EX9E
       if (state->keyboard & (1 << state->V[x(inst)]))
-        state->PC++;
+        state->PC += sizeof(inst);
+      LOG_DEBUG("if key == V%X\n", x(inst));
       return;
     case 0x1A: // EX1A
       if (!(state->keyboard & (1 << state->V[x(inst)])))
-        state->PC++;
+        state->PC += sizeof(inst);
+      LOG_DEBUG("if key != V%X\n", x(inst));
       return;
     }
   case 0xF:
     switch (nn(inst)) {
     case 0x07: // FX07
       state->V[x(inst)] = state->DT;
+      LOG_DEBUG("V%X = delay_timer\n", x(inst));
       return;
     case 0x0A: // FX0A
       state->reg_awaing_key = x(inst);
+      LOG_DEBUG("V%X = key\n", x(inst));
       return;
     case 0x15: // FX15
       state->DT = state->V[x(inst)];
+      LOG_DEBUG("delay_timer = V%X\n", x(inst));
       return;
     case 0x18: // FX18
       state->ST = state->V[x(inst)];
+      LOG_DEBUG("sound_timer = V%X\n", x(inst));
       return;
     case 0x1E: // FX1E
       state->I += state->V[x(inst)];
+      LOG_DEBUG("I += V%X\n", x(inst));
       return;
     case 0x29: // FX29
       state->I = state->V[x(inst)] * 5;
+      LOG_DEBUG("I = loc_of_font(V%X)\n", x(inst));
       return;
     case 0x33: // FX33
     {
@@ -246,13 +278,16 @@ void simulate_instruction(struct chip8state *state) {
         state->memory[state->I + i] = val % 10;
         val /= 10;
       }
+      LOG_DEBUG("I = BCD(V%X)\n", x(inst));
       return;
     }
     case 0x55: // FX55
       memcpy(state->memory + state->I, state->V, x(inst) + 1);
+      LOG_DEBUG("put registers till V%X\n", x(inst));
       return;
     case 0x65: // FX65
       memcpy(state->V, state->memory + state->I, x(inst) + 1);
+      LOG_DEBUG("load registers till V%X\n", x(inst));
       return;
     }
   }
@@ -275,14 +310,20 @@ int main(int argc, char **argv) {
   rewind(rom_file);
   fread(state->memory + 0x200, 1, rom_size, rom_file);
 
+  // load font
+  memcpy(state->memory, fontset, ARRAY_SIZE(fontset));
+
   // setup registers
+  state->PC = 0x200;
+  state->reg_awaing_key = -1;
 
   while (!WindowShouldClose()) {
     BeginDrawing();
 
-    draw_display(display);
-    display[0] = !display[0];
+    simulate_instruction(state);
+    draw_display(state->display);
     EndDrawing();
+    getchar();
   }
 
   CloseWindow();
