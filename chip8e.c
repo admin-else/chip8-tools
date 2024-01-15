@@ -22,6 +22,25 @@ enum {
   CHIP8_DISPLAY_MAX_PIXELID = CHIP8_DISPLAY_COLUMNS * CHIP8_DISPLAY_ROWS
 };
 
+const unsigned char fontset[] = {
+    0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
+    0x20, 0x60, 0x20, 0x20, 0x70, // 1
+    0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
+    0xF0, 0x10, 0xF0, 0x10, 0xF0, // 3
+    0x90, 0x90, 0xF0, 0x10, 0x10, // 4
+    0xF0, 0x80, 0xF0, 0x10, 0xF0, // 5
+    0xF0, 0x80, 0xF0, 0x90, 0xF0, // 6
+    0xF0, 0x10, 0x20, 0x40, 0x40, // 7
+    0xF0, 0x90, 0xF0, 0x90, 0xF0, // 8
+    0xF0, 0x90, 0xF0, 0x10, 0xF0, // 9
+    0xF0, 0x90, 0xF0, 0x90, 0x90, // A
+    0xE0, 0x90, 0xE0, 0x90, 0xE0, // B
+    0xF0, 0x80, 0x80, 0x80, 0xF0, // C
+    0xE0, 0x90, 0x90, 0x90, 0xE0, // D
+    0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
+    0xF0, 0x80, 0xF0, 0x80, 0x80  // F
+};
+
 struct chip8state {
   uint8_t memory[CHIP8_MEMORY_SIZE];
   uint8_t V[16]; // Registers
@@ -218,7 +237,7 @@ void simulate_instruction(struct chip8state *state) {
       state->I += state->V[x(inst)];
       return;
     case 0x29: // FX29
-      // may implement later
+      state->I = state->V[x(inst)] * 5;
       return;
     case 0x33: // FX33
     {
@@ -246,6 +265,17 @@ int main(int argc, char **argv) {
   memset(display, 0, ARRAY_SIZE(display));
 
   InitWindow(window_width, window_height, "chip8e");
+
+  struct chip8state *state = malloc(sizeof(struct chip8state));
+
+  // load rom
+  FILE *rom_file = fopen("roms/tetris.ch8", "rb");
+  fseek(rom_file, 0, SEEK_END);
+  ssize_t rom_size = ftell(rom_file);
+  rewind(rom_file);
+  fread(state->memory + 0x200, 1, rom_size, rom_file);
+
+  // setup registers
 
   while (!WindowShouldClose()) {
     BeginDrawing();
