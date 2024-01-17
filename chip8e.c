@@ -1,4 +1,3 @@
-#include <bits/types/stack_t.h>
 #include <raylib.h>
 
 #include <assert.h>
@@ -57,11 +56,12 @@ struct chip8state {
   // display can only have states on / off
   uint8_t display[CHIP8_DISPLAY_COLUMNS * CHIP8_DISPLAY_ROWS];
   uint16_t keyboard;
-  int8_t reg_awaing_key; // -1 means not awating
-  int err;
+  int8_t reg_awating_key; // -1 means not awating
+  bool jumped;
 };
 
 #define LOG_DEBUG(...) printf(__VA_ARGS__)
+// #define LOG_DEBUG(...)
 
 void draw_display(uint8_t *display) {
   ClearBackground((Color){0, 0, 0, 255});
@@ -77,220 +77,280 @@ void draw_display(uint8_t *display) {
 
 // helpers
 uint8_t static inline inst_type(uint16_t inst) {
-  return inst & 0xF000 >> 3 * 4;
+  return (inst & 0xF000) >> 3 * 4;
 }
 
-uint8_t static inline x(uint16_t inst) { return inst & 0x0F00 >> 2 * 4; }
-uint8_t static inline y(uint16_t inst) { return inst & 0x00F0 >> 1 * 4; }
-uint8_t static inline nnn(uint16_t inst) { return inst & 0x0FFF >> 0 * 4; }
-uint8_t static inline nn(uint16_t inst) { return inst & 0x00FF >> 0 * 4; }
-uint8_t static inline n(uint16_t inst) { return inst & 0x000F >> 0 * 4; }
+uint8_t static inline x(uint16_t inst) { return (inst & 0x0F00) >> 2 * 4; }
+uint8_t static inline y(uint16_t inst) { return (inst & 0x00F0) >> 1 * 4; }
+uint16_t static inline nnn(uint16_t inst) { return (inst & 0x0FFF) >> 0 * 4; }
+uint8_t static inline nn(uint16_t inst) { return (inst & 0x00FF) >> 0 * 4; }
+uint8_t static inline n(uint16_t inst) { return (inst & 0x000F) >> 0 * 4; }
 
 void simulate_instruction(struct chip8state *state) {
+#define JUMP(addr)                                                             \
+  do {                                                                         \
+    state->PC = addr;                                                          \
+    state->jumped = true;                                                      \
+  } while (0)
+#define X ((inst & 0x0F00) >> 2 * 4)
+#define Y ((inst & 0x00F0) >> 1 * 4)
+#define NNN (inst & 0x0FFF)
+#define NN (inst & 0x00FF)
+#define N (inst & 0x000F)
+#define VX state->V[X]
+#define VY state->V[Y]
+#define V0 state->V[0]
+#define VF state->V[0xF]
+
   assert(state->PC < ARRAY_SIZE(state->memory));
   uint16_t inst = be16toh(*(uint16_t *)&state->memory[state->PC]);
-  state->PC += sizeof(inst);
+  if (!state->jumped)
+    state->PC += sizeof(inst);
+  state->jumped = false;
   LOG_DEBUG("0x%04X: %04X ", state->PC, inst);
   switch (inst_type(inst)) {
   case 0:
-    switch (nn(inst)) {
+    switch (NN) {
     case 0xE0: // 00E0
       LOG_DEBUG("clear screen\n");
       memset(state->display, 0, sizeof(state->display));
       return;
     case 0xEE: // 00EE
-      state->PC = state->stack[state->SP--];
-      LOG_DEBUG("return\n");
+      state->SP--;
+      JUMP(state->stack[state->SP]);
+      LOG_DEBUG("return to %03X\n", state->PC);
       return;
     default: // 0NNN
-      LOG_DEBUG("unsuported %X\n", nnn(inst));
+      LOG_DEBUG("unsuported %X\n", NNN);
       return; // unsuported 0NNN treat as nop
     }
   case 1: // 1NNN
-    state->PC = nnn(inst);
-    LOG_DEBUG("jump %X\n", state->PC);
+    JUMP(NNN);
+    LOG_DEBUG("jump %X\n", state->PC + 2);
     return;
   case 2: // 2NNN
-    state->stack[state->SP++] = state->PC;
-    state->PC = nnn(inst);
-    LOG_DEBUG("call %X\n", state->PC);
+    state->stack[state->SP] = state->PC;
+    state->SP++;
+    JUMP(NNN);
+    LOG_DEBUG("call %03X\n", state->PC);
     return;
   case 3: // 3XNN
-    if (state->V[x(inst)] == nn(inst))
+    if (VX == NN)
       state->PC += sizeof(inst);
-    LOG_DEBUG("if V%X == %X\n", x(inst), nn(inst));
+    LOG_DEBUG("if V%X == %X\n", X, NN);
     return;
   case 4: // 4XNN
-    if (state->V[x(inst)] != nn(inst))
+    if (VX != NN)
       state->PC += sizeof(inst);
-    LOG_DEBUG("if V%X != %X\n", x(inst), nn(inst));
+    LOG_DEBUG("if V%X != %X\n", X, NN);
     return;
   case 5: // 5XY0
-    if (state->V[x(inst)] != state->V[y(inst)])
+    if (VX != VY)
       state->PC += sizeof(inst);
-    LOG_DEBUG("if V%X != V%X\n", x(inst), y(inst));
+    LOG_DEBUG("if V%X != V%X\n", X, Y);
     return;
   case 6: // 6XNN
-    state->V[x(inst)] = nn(inst);
-    LOG_DEBUG("V%X = 0x%X\n", x(inst), nn(inst));
+    VX = NN;
+    LOG_DEBUG("V%X = 0x%X\n", X, NN);
     return;
   case 7: // 7XNN
-    state->V[x(inst)] += nn(inst);
-    LOG_DEBUG("V%X += 0x%X\n", x(inst), nn(inst));
+    VX += NN;
+    LOG_DEBUG("V%X += 0x%X\n", X, NN);
     return;
   case 8: // these are very easy
     switch (n(inst)) {
     case 0: // 8XY0
-      state->V[x(inst)] = state->V[y(inst)];
-      LOG_DEBUG("V%X = V%X\n", x(inst), y(inst));
+      VX = VY;
+      LOG_DEBUG("V%X = V%X\n", X, Y);
       return;
     case 1: // 8XY1
-      state->V[x(inst)] |= state->V[y(inst)];
-      LOG_DEBUG("V%X |= V%X\n", x(inst), y(inst));
+      VX |= VY;
+      LOG_DEBUG("V%X |= V%X\n", X, Y);
       return;
     case 2: // 8XY2
-      state->V[x(inst)] &= state->V[y(inst)];
-      LOG_DEBUG("V%X &= V%X\n", x(inst), y(inst));
+      VX &= VY;
+      LOG_DEBUG("V%X &= V%X\n", X, Y);
       return;
     case 3: // 8XY3
-      state->V[x(inst)] ^= state->V[y(inst)];
-      LOG_DEBUG("V%X ^= V%X\n", x(inst), y(inst));
+      VX ^= VY;
+      LOG_DEBUG("V%X ^= V%X\n", X, Y);
       return;
       // now the harder ones
       // btw the old value are for the case that the flag register gets used
     case 4: // 8XY4
     {
-      uint16_t res = state->V[x(inst)] + state->V[y(inst)];
-      state->V[x(inst)] = res & 0xFF;
-      state->V[0xF] = res > 0xFF;
-      LOG_DEBUG("V%X += V%X // with carry\n", x(inst), y(inst));
+      uint16_t res = VX + VY;
+      VX = res & 0xFF;
+      VF = res > 0xFF;
+      LOG_DEBUG("V%X += V%X // with carry\n", X, Y);
       return;
     }
     case 5: // 8XY5
     {
-      uint8_t oldx = state->V[x(inst)];
-      state->V[x(inst)] -= state->V[y(inst)];
-      state->V[0xF] = oldx < state->V[y(inst)];
-      LOG_DEBUG("V%X -= V%X // with carry\n", x(inst), y(inst));
+      uint8_t oldx = VX;
+      VX -= VY;
+      VF = oldx < VY;
+      LOG_DEBUG("V%X -= V%X // with carry\n", X, Y);
       return;
     }
     case 6: // 8XY6
     {
-      uint8_t oldx = state->V[x(inst)];
-      state->V[x(inst)] >>= state->V[y(inst)];
-      state->V[0xF] = oldx & 1;
-      LOG_DEBUG("V%X >>= V%X // with carry\n", x(inst), y(inst));
+      uint8_t oldx = VX;
+      VX >>= VY;
+      VF = oldx & 1;
+      LOG_DEBUG("V%X >>= V%X // with carry\n", X, Y);
       return;
     }
     case 7: // 8XY7
     {
-      state->V[x(inst)] = state->V[y(inst)] - state->V[x(inst)];
-      state->V[0xF] = state->V[x(inst)] < state->V[y(inst)];
-      LOG_DEBUG("V%X = V%X - V%X // with carry\n", x(inst), y(inst), x(inst));
+      VX = VY - VX;
+      VF = VX < VY;
+      LOG_DEBUG("V%X = V%X - V%X // with carry\n", X, Y, X);
       return;
     }
     case 0xE: // 8XYE
     {
-      uint8_t oldx = state->V[x(inst)];
-      state->V[x(inst)] <<= 1;
-      state->V[0xF] = (oldx >> 7) & 0x1;
-      LOG_DEBUG("V%X <<= V%X // with carry\n", x(inst), y(inst));
+      uint8_t oldx = VX;
+      VX <<= 1;
+      VF = (oldx >> 7) & 0x1;
+      LOG_DEBUG("V%X <<= V%X // with carry\n", X, Y);
       return;
     }
     }
   case 9: // 9XY0
-    if (state->V[x(inst)] != state->V[y(inst)])
+    if (VX != VY)
       state->PC += sizeof(inst);
-    LOG_DEBUG("if V%X != V%X\n", x(inst), y(inst));
+    LOG_DEBUG("if V%X != V%X\n", X, Y);
     return;
   case 0xA: // ANNN
-    state->I = nnn(inst);
-    LOG_DEBUG("I = %X\n", nnn(inst));
+    state->I = NNN;
+    LOG_DEBUG("I = %X\n", NNN);
     return;
   case 0xB: // BNNN
-    state->PC = nnn(inst) + state->V[0];
-    LOG_DEBUG("I = %X\n + V0", nnn(inst));
+    JUMP(NNN + state->V[0]);
+    LOG_DEBUG("I = %X\n + V0", NNN);
     return;
   case 0xC: // CXNN
-    state->V[x(inst)] = rand() & nn(inst);
-    LOG_DEBUG("V%X = %X & rand()\n", x(inst), nn(inst));
+    VX = rand() & NN;
+    LOG_DEBUG("V%X = %X & rand()\n", X, NN);
     return;
   case 0xD: { // DXYN
-    uint8_t x_off = state->V[x(inst)], y_off = state->V[y(inst)], flag = false;
+    VF = false;
     for (int y = 0; y < n(inst); y++) {
       for (int x = 0; x < 8; x++) {
-        uint16_t pixel_id = (y_off + y) * CHIP8_DISPLAY_COLUMNS + x_off + x;
-        if (pixel_id > CHIP8_DISPLAY_MAX_PIXELID)
-          continue; // outside of screen
+        uint16_t pixel_id =
+            ((VY + y) % CHIP8_DISPLAY_ROWS) * CHIP8_DISPLAY_COLUMNS +
+            (VX + x) % CHIP8_DISPLAY_COLUMNS;
         bool val = state->memory[state->I + y] & 1 << x;
         if (state->display[pixel_id] && val)
-          flag = true;
+          VF = true;
         state->display[pixel_id] ^= val;
       }
     }
-    state->V[0xF] = flag;
-    LOG_DEBUG("sprite(V%X, V%X, %X)\n", x(inst), y(inst), n(inst));
+    LOG_DEBUG("sprite(V%X, V%X, %X)\n", X, Y, n(inst));
     return;
   }
   case 0xE: // IO instructions
-    switch (nn(inst)) {
+    switch (NN) {
     case 0x9E: // EX9E
-      if (state->keyboard & (1 << state->V[x(inst)]))
+      if (state->keyboard & (1 << VX))
         state->PC += sizeof(inst);
-      LOG_DEBUG("if key == V%X\n", x(inst));
+      LOG_DEBUG("if key == V%X\n", X);
       return;
     case 0x1A: // EX1A
-      if (!(state->keyboard & (1 << state->V[x(inst)])))
+      if (!(state->keyboard & (1 << VX)))
         state->PC += sizeof(inst);
-      LOG_DEBUG("if key != V%X\n", x(inst));
+      LOG_DEBUG("if key != V%X\n", X);
       return;
     }
   case 0xF:
-    switch (nn(inst)) {
+    switch (NN) {
     case 0x07: // FX07
-      state->V[x(inst)] = state->DT;
-      LOG_DEBUG("V%X = delay_timer\n", x(inst));
+      VX = state->DT;
+      LOG_DEBUG("V%X = delay_timer\n", X);
       return;
     case 0x0A: // FX0A
-      state->reg_awaing_key = x(inst);
-      LOG_DEBUG("V%X = key\n", x(inst));
+      state->reg_awating_key = X;
+      LOG_DEBUG("V%X = key\n", X);
       return;
     case 0x15: // FX15
-      state->DT = state->V[x(inst)];
-      LOG_DEBUG("delay_timer = V%X\n", x(inst));
+      state->DT = VX;
+      LOG_DEBUG("delay_timer = V%X\n", X);
       return;
     case 0x18: // FX18
-      state->ST = state->V[x(inst)];
-      LOG_DEBUG("sound_timer = V%X\n", x(inst));
+      state->ST = VX;
+      LOG_DEBUG("sound_timer = V%X\n", X);
       return;
     case 0x1E: // FX1E
-      state->I += state->V[x(inst)];
-      LOG_DEBUG("I += V%X\n", x(inst));
+      state->I += VX;
+      LOG_DEBUG("I += V%X\n", X);
       return;
     case 0x29: // FX29
-      state->I = state->V[x(inst)] * 5;
-      LOG_DEBUG("I = loc_of_font(V%X)\n", x(inst));
+      state->I = VX * 5;
+      LOG_DEBUG("I = loc_of_font(V%X)\n", X);
       return;
     case 0x33: // FX33
     {
-      uint8_t val = state->V[x(inst)];
+      uint8_t val = VX;
       for (char i = 3; i > 0; i--) {
         state->memory[state->I + i] = val % 10;
         val /= 10;
       }
-      LOG_DEBUG("I = BCD(V%X)\n", x(inst));
+      LOG_DEBUG("I = BCD(V%X)\n", X);
       return;
     }
     case 0x55: // FX55
-      memcpy(state->memory + state->I, state->V, x(inst) + 1);
-      LOG_DEBUG("put registers till V%X\n", x(inst));
+      memcpy(state->memory + state->I, state->V, X + 1);
+      LOG_DEBUG("put registers till V%X\n", X);
       return;
     case 0x65: // FX65
-      memcpy(state->V, state->memory + state->I, x(inst) + 1);
-      LOG_DEBUG("load registers till V%X\n", x(inst));
+      memcpy(state->V, state->memory + state->I, X + 1);
+      LOG_DEBUG("load registers till V%X\n", X);
       return;
     }
   }
+
+#undef JUMP
+#undef X
+#undef Y
+#undef NNN
+#undef NN
+#undef N
+#undef VX
+#undef VY
+#undef V0
+#undef VF
+}
+
+uint16_t get_keyboard() {
+  uint16_t keyboard = 0;
+#define MAP_KEY(key_id, key) keyboard |= IsKeyPressed(key) << key_id;
+  MAP_KEY(1, KEY_ONE);
+  MAP_KEY(2, KEY_TWO);
+  MAP_KEY(3, KEY_THREE);
+  MAP_KEY(0xC, KEY_FOUR);
+
+  // row 2
+  MAP_KEY(4, KEY_Q);
+  MAP_KEY(5, KEY_W);
+  MAP_KEY(6, KEY_E);
+  MAP_KEY(0xD, KEY_R);
+
+  // row 3
+  MAP_KEY(7, KEY_A);
+  MAP_KEY(8, KEY_S);
+  MAP_KEY(9, KEY_D);
+  MAP_KEY(0xE, KEY_F);
+
+  // row 4
+  MAP_KEY(
+      0xA,
+      KEY_Y); // you may change this to KEY_Z if you have a american keyboard
+  MAP_KEY(0, KEY_X);
+  MAP_KEY(0xB, KEY_C);
+  MAP_KEY(0xF, KEY_V);
+#undef MAP_KEY
+  return keyboard;
 }
 
 int main(int argc, char **argv) {
@@ -302,9 +362,10 @@ int main(int argc, char **argv) {
   InitWindow(window_width, window_height, "chip8e");
 
   struct chip8state *state = malloc(sizeof(struct chip8state));
+  memset(state, 0, sizeof(struct chip8state));
 
   // load rom
-  FILE *rom_file = fopen("roms/tetris.ch8", "rb");
+  FILE *rom_file = fopen("output.ch8", "rb");
   fseek(rom_file, 0, SEEK_END);
   ssize_t rom_size = ftell(rom_file);
   rewind(rom_file);
@@ -314,16 +375,30 @@ int main(int argc, char **argv) {
   memcpy(state->memory, fontset, ARRAY_SIZE(fontset));
 
   // setup registers
-  state->PC = 0x200;
-  state->reg_awaing_key = -1;
+  state->jumped = true;
+  state->PC = 0x200; // one before bec the simulate instruction increments
+                     // before executing
+  state->reg_awating_key = -1;
 
   while (!WindowShouldClose()) {
-    BeginDrawing();
+    state->keyboard = get_keyboard();
+    if (state->reg_awating_key != -1) {
+      for (int key_id = 0; key_id < 0xF; key_id++) {
+        if (state->keyboard & (1 << key_id)) {
+          LOG_DEBUG("got awaited key %i\n", key_id);
+          state->V[state->reg_awating_key] = key_id;
+          state->reg_awating_key = -1;
+          break;
+        }
+      }
+    } else {
+      simulate_instruction(state);
+    }
 
-    simulate_instruction(state);
+    BeginDrawing();
     draw_display(state->display);
     EndDrawing();
-    getchar();
+    // getchar();
   }
 
   CloseWindow();
