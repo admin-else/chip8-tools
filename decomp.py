@@ -88,13 +88,15 @@ with open("output.ch8", "rb") as f:
 
 
 def byte2art(val):
-    return format(val, "0>8b").replace("0", " ").replace("1", "█")
+    return format(val & 0xFF, "0>8b").replace("0", " ").replace("1", "█")
 
 
 for i in range(0, len(rom), 2):
     inst = (rom[i] << 8) | rom[i + 1]  # Combine two bytes into a 16-bit instruction
 
-    print(f"{byte2art(inst << 2)}\n{byte2art(inst)}")
+    print(
+        f"{byte2art(rom[i])}| LOC: {str(0x200 + i).zfill(4)} RAW: {format(inst, 'x').zfill(4)}\n{byte2art(rom[i + 1])}| {decomp_inst(inst)}"
+    )
     # print(
     #    f"{str(0x200 + i).zfill(4)} | {short2art(inst)} {format(inst, 'x').zfill(4)}: {decomp_inst(inst)}"
     # )

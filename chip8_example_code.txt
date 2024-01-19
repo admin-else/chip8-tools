@@ -1,0 +1,13 @@
+: lable
+###     ; sprite_example this is a comment
+#..
+###
+..#
+###
+
+if(V1 == K) ; if this
+  lable()   ; then this
+
+if(V1 = K) { ; same here
+
+}

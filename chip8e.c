@@ -2,12 +2,12 @@
 
 #include <assert.h>
 #include <endian.h>
-#include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <threads.h>
 #include <time.h>
 
 #define ARRAY_SIZE(EXPR) (sizeof(EXPR) / sizeof((EXPR)[0]))
@@ -60,7 +60,17 @@ struct chip8state {
   bool jumped;
 };
 
+void print_time() {
+  time_t t = time(NULL);
+  struct tm ttm = *localtime(&t);
+  printf("[%02d:%02d:%02d] ", ttm.tm_hour, ttm.tm_min, ttm.tm_sec);
+}
+
 #define LOG_DEBUG(...) printf(__VA_ARGS__)
+
+#define LOG_DEBUG_W_TIME(...)                                                  \
+  print_time();                                                                \
+  printf(__VA_ARGS__)
 // #define LOG_DEBUG(...)
 
 void draw_display(uint8_t *display) {
@@ -79,12 +89,6 @@ void draw_display(uint8_t *display) {
 uint8_t static inline inst_type(uint16_t inst) {
   return (inst & 0xF000) >> 3 * 4;
 }
-
-uint8_t static inline x(uint16_t inst) { return (inst & 0x0F00) >> 2 * 4; }
-uint8_t static inline y(uint16_t inst) { return (inst & 0x00F0) >> 1 * 4; }
-uint16_t static inline nnn(uint16_t inst) { return (inst & 0x0FFF) >> 0 * 4; }
-uint8_t static inline nn(uint16_t inst) { return (inst & 0x00FF) >> 0 * 4; }
-uint8_t static inline n(uint16_t inst) { return (inst & 0x000F) >> 0 * 4; }
 
 void simulate_instruction(struct chip8state *state) {
 #define JUMP(addr)                                                             \
@@ -107,7 +111,7 @@ void simulate_instruction(struct chip8state *state) {
   if (!state->jumped)
     state->PC += sizeof(inst);
   state->jumped = false;
-  LOG_DEBUG("0x%04X: %04X ", state->PC, inst);
+  LOG_DEBUG_W_TIME("0x%04X: %04X ", state->PC, inst);
   switch (inst_type(inst)) {
   case 0:
     switch (NN) {
@@ -158,7 +162,7 @@ void simulate_instruction(struct chip8state *state) {
     LOG_DEBUG("V%X += 0x%X\n", X, NN);
     return;
   case 8: // these are very easy
-    switch (n(inst)) {
+    switch (N) {
     case 0: // 8XY0
       VX = VY;
       LOG_DEBUG("V%X = V%X\n", X, Y);
@@ -236,7 +240,7 @@ void simulate_instruction(struct chip8state *state) {
     return;
   case 0xD: { // DXYN
     VF = false;
-    for (int y = 0; y < n(inst); y++) {
+    for (int y = 0; y < N; y++) {
       for (int x = 0; x < 8; x++) {
         uint16_t pixel_id =
             ((VY + y) % CHIP8_DISPLAY_ROWS) * CHIP8_DISPLAY_COLUMNS +
@@ -247,7 +251,9 @@ void simulate_instruction(struct chip8state *state) {
         state->display[pixel_id] ^= val;
       }
     }
-    LOG_DEBUG("sprite(V%X, V%X, %X)\n", X, Y, n(inst));
+    LOG_DEBUG(
+        "sprite(V%X, V%X, %X) real displays at off_x=%d off_y=%d x=8 y=%d\n", X,
+        Y, N, VX, VY, N);
     return;
   }
   case 0xE: // IO instructions
@@ -380,20 +386,21 @@ int main(int argc, char **argv) {
                      // before executing
   state->reg_awating_key = -1;
 
+  SetTargetFPS(60);
+
   while (!WindowShouldClose()) {
     state->keyboard = get_keyboard();
     if (state->reg_awating_key != -1) {
       for (int key_id = 0; key_id < 0xF; key_id++) {
         if (state->keyboard & (1 << key_id)) {
-          LOG_DEBUG("got awaited key %i\n", key_id);
+          LOG_DEBUG_W_TIME("got awaited key %i\n", key_id);
           state->V[state->reg_awating_key] = key_id;
           state->reg_awating_key = -1;
           break;
         }
       }
-    } else {
+    } else
       simulate_instruction(state);
-    }
 
     BeginDrawing();
     draw_display(state->display);
